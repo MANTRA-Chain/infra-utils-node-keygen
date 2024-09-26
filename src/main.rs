@@ -111,9 +111,10 @@ fn main() -> Result<()> {
     // iterate over secrets to generate kustomize secret generator
     println!("secretGenerator:");
     for secret in secrets {
+        let file_path = format!("{}/{}", directory, secret.clone() + ".json");
         println!("  - name: {}", secret);
         println!("    files:");
-        println!("      - node_key.json={}.json", secret);
+        println!("      - node_key.json={}", file_path);
         println!("    type: Opaque");
     }
     println!("generatorOptions:");
