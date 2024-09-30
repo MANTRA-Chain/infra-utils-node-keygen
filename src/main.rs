@@ -45,7 +45,7 @@ struct GenerateNodeKeysArgs {
 }
 
 #[derive(Debug, Args)]
-#[clap(about = "short valkey - Generates a priv_validator_key.json file", alias = "valkey")]
+#[clap(about = "short valkey - Generates a priv_validator_key.json and pubkey.json", alias = "valkey")]
 struct GeneratePrivValidatorKeysArgs {
     #[clap(short = 'd', long = "directory", default_value = "val_keys")]
     directory: String,
