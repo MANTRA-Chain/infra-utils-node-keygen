@@ -141,9 +141,11 @@ fn generate_priv_validator_key(args: GeneratePrivValidatorKeysArgs) -> Result<()
         };
         std::fs::write(&output, serde_json::to_string_pretty(&priv_validator_key)?)?;
 
-        let pubkey = format!("{}/pubkey.json", sub_directory);
+        let pubkey = format!("{}/pubkey.txt", sub_directory);
         let cosmos_pubkey = CosmosPublicKey::Ed25519(public_key.ed25519().unwrap());
-        std::fs::write(&pubkey, serde_json::to_string(&cosmos_pubkey)?)?;
+        let json_string = serde_json::to_string(&cosmos_pubkey)?;
+        let formatted_json_string = format!("{:?}", json_string);
+        std::fs::write(&pubkey, formatted_json_string)?;
     }
     Ok(())
 }
