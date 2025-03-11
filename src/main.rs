@@ -1,4 +1,6 @@
-use serde::{Serialize, ser};
+mod util;
+
+use serde::{ser, Serialize};
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -7,15 +9,20 @@ use rand::prelude::*;
 use rand::rngs::adapter::ReseedingRng;
 use rand::rngs::OsRng;
 use rand_chacha::ChaCha20Core;
-use tendermint::private_key::PrivateKey;
+use subtle_encoding::base64;
 use tendermint::account;
+use tendermint::private_key::PrivateKey;
+use tendermint::public_key::Ed25519;
 use tendermint_config::NodeKey;
 use tendermint_config::PrivValidatorKey;
-use tendermint::public_key::Ed25519 as Ed25519;
-use subtle_encoding::base64;
+use util::{get_operator_address, Network};
 
 #[derive(Debug, Parser)]
-#[clap(name = "cometbft Key Generator", version = "1.0", about = "Generates node keys and peer information")]
+#[clap(
+    name = "cometbft Key Generator",
+    version = "1.0",
+    about = "Generates node keys and peer information"
+)]
 struct App {
     #[clap(subcommand)]
     command: Command,
@@ -25,27 +32,43 @@ struct App {
 enum Command {
     GenerateNodeKeys(GenerateNodeKeysArgs),
     GeneratePrivValidatorKeys(GeneratePrivValidatorKeysArgs),
+    GetOperatorAddress(GetOperatorAddressArgs),
 }
 
 #[derive(Debug, Args)]
-#[clap(about = "short nodekey - Generates node keys and peer information", alias = "nodekey")]
+#[clap(
+    about = "short nodekey - Generates node keys and peer information",
+    alias = "nodekey"
+)]
 struct GenerateNodeKeysArgs {
     #[clap(short = 'd', long = "directory", default_value = "node_keys")]
     directory: String,
-    #[clap(short = 'g', long = "group_prefix_list", required = true, default_value = "")]
+    #[clap(
+        short = 'g',
+        long = "group_prefix_list",
+        required = true,
+        default_value = ""
+    )]
     group_prefix_list: String,
     #[clap(short = 'n', long = "global_node_per_group", default_value = "2")]
     global_node_per_group: usize,
     #[clap(short = 's', long = "svc_domain", default_value = "svc.cluster.local")]
     svc_domain: String,
-    #[clap(short = 'N', long = "namespace", default_value = "mantrachain-dukong-nodes")]
+    #[clap(
+        short = 'N',
+        long = "namespace",
+        default_value = "mantrachain-dukong-nodes"
+    )]
     namespace: String,
     #[clap(short = 'p', long = "port", default_value = "26656")]
     port: u16,
 }
 
 #[derive(Debug, Args)]
-#[clap(about = "short valkey - Generates a priv_validator_key.json and pubkey.json", alias = "valkey")]
+#[clap(
+    about = "short valkey - Generates a priv_validator_key.json and pubkey.json",
+    alias = "valkey"
+)]
 struct GeneratePrivValidatorKeysArgs {
     #[clap(short = 'd', long = "directory", default_value = "val_keys")]
     directory: String,
@@ -55,15 +78,55 @@ struct GeneratePrivValidatorKeysArgs {
     num_of_validator_key: usize,
 }
 
-fn main() -> Result<()> {
+#[derive(Debug, Args)]
+#[clap(
+    about = "short Opaddr - Get operator address from consensus address",
+    alias = "Opaddr"
+)]
+struct GetOperatorAddressArgs {
+    #[clap(short = 'n', long = "network", default_value = "mainnet")]
+    network: String,
+    #[clap(short = 'p', long = "prefix", default_value = "mantravalcons")]
+    hrp: String,
+    #[clap(
+        help = "override the hardcoded endpoint determined by network",
+        short = 'e',
+        long = "endpoint"
+    )]
+    endpoint: Option<String>,
+    /// The consensus address to look up
+    #[clap(value_name = "CONSENSUS_ADDR")]
+    consensus_addr: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let app = App::parse();
 
     match app.command {
         Command::GenerateNodeKeys(args) => generate_node_keys(args),
         Command::GeneratePrivValidatorKeys(args) => generate_priv_validator_key(args),
+        Command::GetOperatorAddress(args) => {
+            let endpoint = if let Some(e) = args.endpoint {
+                e.clone()
+            } else {
+                let network = match args.network.to_lowercase().as_str() {
+                    "mainnet" => Network::Mainnet,
+                    "testnet" => Network::Testnet,
+                    _ => Network::default(),
+                };
+                network.api_endpoint().to_owned()
+            };
+
+            let operator_address =
+                get_operator_address(&endpoint, &args.consensus_addr, &args.hrp).await?;
+            println!("Operator Address: {}", operator_address);
+            Ok(())
+        }
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn generate_node_keys(args: GenerateNodeKeysArgs) -> Result<()> {
     let directory = args.directory;
     let group_prefix_list: Vec<&str> = args.group_prefix_list.split(',').collect();
@@ -95,7 +158,19 @@ fn generate_node_keys(args: GenerateNodeKeysArgs) -> Result<()> {
                 priv_key: private_key,
             };
 
-            peers.push(node_key.node_id().to_string() + "@" + group_prefix + "-p2p-" + &m.to_string() + "." + &namespace + "." + &svc_domain + ":" + &port.to_string());
+            peers.push(
+                node_key.node_id().to_string()
+                    + "@"
+                    + group_prefix
+                    + "-p2p-"
+                    + &m.to_string()
+                    + "."
+                    + &namespace
+                    + "."
+                    + &svc_domain
+                    + ":"
+                    + &port.to_string(),
+            );
 
             std::fs::create_dir_all(&directory)?;
             let file_path = format!("{}/{}", directory, secret_name + ".json");
@@ -126,7 +201,11 @@ fn generate_priv_validator_key(args: GeneratePrivValidatorKeysArgs) -> Result<()
     let num_of_validator_key = args.num_of_validator_key;
 
     for n in 0..num_of_validator_key {
-        let sub_directory = format!("{}/{}", directory, validator_prefix.clone() + &n.to_string());
+        let sub_directory = format!(
+            "{}/{}",
+            directory,
+            validator_prefix.clone() + &n.to_string()
+        );
         std::fs::create_dir_all(&sub_directory)?;
         let output = format!("{}/priv_validator_key.json", sub_directory);
 
@@ -164,7 +243,7 @@ pub enum CosmosPublicKey {
     /// Ed25519 keys
     #[serde(
         rename = "/cosmos.crypto.ed25519.PubKey",
-        serialize_with = "serialize_ed25519_base64",
+        serialize_with = "serialize_ed25519_base64"
     )]
     Ed25519(Ed25519),
 }
